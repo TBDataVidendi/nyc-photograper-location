@@ -1,0 +1,375 @@
+---
+#title: "Where was this picture taken from?"
+#date: "16 November 2018"
+output: 
+    bookdown::html_document2:  
+        fig_caption: yes
+        fig_crop: no
+        toc: no
+        toc_depth: 2
+urlcolor: blue
+linkcolor: black
+filecolor: black
+citecolor: black
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, comment=FALSE, fig.pos = 'h')
+
+setwd("D:/OneDrive/DataScience/Training/DataAnalyticsMSc/Uncertainty Assessment and Bayesian Comp")
+
+###################################################################
+# packages
+
+require(RColorBrewer)
+require(reshape)
+require(MASS)
+require(ggmap)
+require(osmar)
+require(geosphere)
+require(mvtnorm)
+require(truncnorm)
+require(coda)
+require(gridExtra)
+
+register_google(key = 'AIzaSyA5glCK4woGllJ6JZkeKgLnBfYh1gGpf4Q')
+
+###################################################################
+# data
+
+landmarks<-data.frame(lon=c(-73.990143, -73.987364, -73.986590, -73.977692),
+                      lat=c(40.747103, 40.741270, 40.756129, 40.750853),
+                      names=c("Kimpton hotel", "Metropolitan Life Ins. Co. Tower", "Times square", "101 Park Ave"))
+
+
+fartherLandmarks<-data.frame(lon=c(-74.044565, -74.052438, -74.028468, -73.974059),
+                      lat=c(40.689262, 40.604104, 40.740896, 40.728115),
+                      names=c("Statue of liberty", "Verrazzano bridge east pillar", "1 Marine View Pl. Hoboken", "Cons. Edison power plant"))
+
+alpha <- 43#.25558 # First bearing
+beta <- 25#.3805 # Second bearing
+gamma <- 70#.01129 # Third bearing
+delta <- 350#.9222 # fourth bearing
+
+###################################################################
+# functions
+
+# function to calculate the bearing angle given 2 points
+CalculateBearing <- function(lon1, lat1, lon2, lat2)
+{
+    (360 + atan((lon2 - lon1) / (lat2 - lat1)) * 180/pi) %% 360
+}
+
+intersectBearings <- function(p1,b1,p2,b2) {
+    x1 <- p1[1]
+    x2 <- p1[1] + 0.1*sin(b1*pi/180)
+    x3 <- p2[1]
+    x4 <- p2[1] + 0.1*sin(b2*pi/180)
+    y1 <- p1[2]
+    y2 <- p1[2] + 0.1*cos(b1*pi/180)
+    y3 <- p2[2]
+    y4 <- p2[2] + 0.1*cos(b2*pi/180)
+    x <- ((x1*y2-y1*x2)*(x3-x4)-(x1-x2)*(x3*y4-y3*x4))/((x1-x2)*(y3-y4)-(y1-y2)*(x3-x4))
+    y <- ((x1*y2-y1*x2)*(y3-y4)-(y1-y2)*(x3*y4-y3*x4))/((x1-x2)*(y3-y4)-(y1-y2)*(x3-x4))
+    return(as.numeric(c(x,y)))
+}
+
+```
+
+# Introduction
+
+Any new yorker or a person with some knowledge of the city would be able to immediately tell where the picture in figure \@ref(fig:ny) has been taken from. As we are not lucky enough to have this knowledge and we would like to know where this amazing view can be seen, we will be trying a position resection method and Bayes inference to determine the most likely location of the photographer and describe the uncertainty around our result.
+We are assuming that the picture is not greatly affected by any major deformation, such as fisheye distortion, etc. 
+
+```{r ny, fig.cap="A nice view of New York City"}
+knitr::include_graphics('./img/ny1.jpg', dpi = 650)
+```
+\pagebreak
+
+# Methodology
+
+Ideally, the position resection method would require us to be in the location we want to determine on the map, identify 2 or more reference points on both the landscape and the map, measure the bearings from our position to the reference points with a compass, draw the resulting lines on the map and take the intersection of the lines as our position. As we are only looking at a picture, we will consider 4 pairs of reference points that are vertically aligned and measure the bearings between them on the map, then the closest points and the bearing angles will be used to draw the lines and see if they meet in a single point. We expect they don't meet in a single point and that's where Bayes inference comes to play: we will calculate and plot the distribution of the most likely position given the information we have available.
+
+# Reference points
+
+The 4 pairs of reference points are visible in the map in figure \@ref(fig:nyPoints) and named from A to D.
+
+```{r nyPoints, fig.cap="The 4 pairs of reference points"}
+knitr::include_graphics('./img/nyPoints.jpg', dpi = 650)
+```
+
+## Reference A
+
+```{r nyPointA, fig.cap="Reference line A"}
+knitr::include_graphics('./img/nyPointA.jpg', dpi = 150)
+```
+
+Line joining `r landmarks$names[4]` (lon: `r landmarks$lon[4]`, lat: `r landmarks$lat[4]`) and `r fartherLandmarks$names[4]` (lon: `r fartherLandmarks$lon[4]`, lat: `r fartherLandmarks$lat[4]`)
+
+```{r mapA, message = FALSE}
+map <- get_map(c(landmarks[4,1], landmarks[4,2]), zoom=19, maptype="satellite")
+g1 <- ggmap(map) + ggtitle(landmarks$names[4])
+
+map <- get_map(c(fartherLandmarks[4,1], fartherLandmarks[4,2]), zoom=19, maptype="satellite")
+g2 <- ggmap(map) + ggtitle(fartherLandmarks$names[4])
+
+grid.arrange(g1, g2, ncol=2)
+```
+
+## Reference B
+
+```{r nyPointB, fig.cap="Reference line B"}
+knitr::include_graphics('./img/nyPointB.jpg', dpi = 150)
+```
+
+Line joining `r landmarks$names[1]` (lon: `r landmarks$lon[1]`, lat: `r landmarks$lat[1]`) and `r fartherLandmarks$names[1]` (lon: `r fartherLandmarks$lon[1]`, lat: `r fartherLandmarks$lat[1]`)
+
+```{r mapB, message = FALSE}
+map <- get_map(c(landmarks[1,1], landmarks[1,2]), zoom=19, maptype="satellite")
+g1 <- ggmap(map) + ggtitle(landmarks$names[1])
+
+map <- get_map(c(fartherLandmarks[1,1], fartherLandmarks[1,2]), zoom=19, maptype="satellite")
+g2 <- ggmap(map) + ggtitle(fartherLandmarks$names[1])
+
+grid.arrange(g1, g2, ncol=2)
+```
+
+## Reference C
+
+```{r nyPointC, fig.cap="Reference line C"}
+knitr::include_graphics('./img/nyPointC.jpg', dpi = 150)
+```
+
+Line joining `r landmarks$names[3]` (lon: `r landmarks$lon[3]`, lat: `r landmarks$lat[3]`) and `r fartherLandmarks$names[3]` (lon: `r fartherLandmarks$lon[3]`, lat: `r fartherLandmarks$lat[3]`)
+
+```{r mapC, message = FALSE}
+map <- get_map(c(landmarks[3,1], landmarks[3,2]), zoom=19, maptype="satellite")
+g1 <- ggmap(map) + ggtitle(landmarks$names[3])
+
+map <- get_map(c(fartherLandmarks[3,1], fartherLandmarks[3,2]), zoom=19, maptype="satellite")
+g2 <- ggmap(map) + ggtitle(fartherLandmarks$names[3])
+
+grid.arrange(g1, g2, ncol=2)
+```
+
+## Reference D
+
+```{r nyPointD, fig.cap="Reference line D"}
+knitr::include_graphics('./img/nyPointD.jpg', dpi = 150)
+```
+
+Line joining `r landmarks$names[2]` (lon: `r landmarks$lon[2]`, lat: `r landmarks$lat[2]`) and `r fartherLandmarks$names[2]` (lon: `r fartherLandmarks$lon[2]`, lat: `r fartherLandmarks$lat[2]`)
+
+```{r mapD, message = FALSE}
+map <- get_map(c(landmarks[2,1], landmarks[2,2]), zoom=19, maptype="satellite")
+g1 <- ggmap(map) + ggtitle(landmarks$names[2])
+
+map <- get_map(c(fartherLandmarks[2,1], fartherLandmarks[2,2]), zoom=19, maptype="satellite")
+g2 <- ggmap(map) + ggtitle(fartherLandmarks$names[2])
+
+grid.arrange(g1, g2, ncol=2)
+```
+
+
+The bearings (`r alpha`, `r beta`, `r gamma` and `r delta`) have been calculated using the pairs of reference points.
+
+The reference points and the lines joining them are visible in the map in fig. \@ref(fig:mapsat).
+
+```{r mapsat, fig.cap="Reference points and lines", fig.height = 10, fig.width = 10, message = FALSE }
+
+d <- seq(-1, 1, 0.0001) # Length of the line
+line1 <- data.frame(lon=landmarks[1,1] + d*sin(alpha*pi/180+pi),
+                    lat=landmarks[1,2] + d*cos(alpha*pi/180+pi))
+line2 <- data.frame(lon=landmarks[2,1] + d*sin(beta*pi/180+pi),
+                    lat=landmarks[2,2] + d*cos(beta*pi/180+pi))
+line3 <- data.frame(lon=landmarks[3,1] + d*sin(gamma*pi/180+pi),
+                    lat=landmarks[3,2] + d*cos(gamma*pi/180+pi))
+line4 <- data.frame(lon=landmarks[4,1] + d*sin(delta*pi/180+pi),
+                    lat=landmarks[4,2] + d*cos(delta*pi/180+pi))
+
+# map of the area
+map <- get_map(c(-73.979, 40.68), zoom=12, maptype="satellite")
+mapPlot <- ggmap(map)+
+    geom_point(aes(x = lon, y = lat), size = 3, data = landmarks, alpha = 1, colour = "red") +
+    geom_point(aes(x = lon, y = lat), size = 3, data = fartherLandmarks, alpha = 1, colour = "blue") +
+    geom_line(aes(x=lon,y=lat),data=line1, col = "white", alpha = 1) +
+    geom_line(aes(x=lon,y=lat),data=line2, col = "white", alpha = 1) +
+    geom_line(aes(x=lon,y=lat),data=line3, col = "white", alpha = 1) +
+    geom_line(aes(x=lon,y=lat),data=line4, col = "white", alpha = 1) +
+    ggtitle("") +
+    geom_text(aes(x = lon, y = lat, label = names), data = landmarks, nudge_y = -0.002, nudge_x = -0.004, size = 4, hjust = "left", colour = "white") +
+    geom_text(aes(x = lon, y = lat, label = names), data = fartherLandmarks, nudge_y = -0.002, nudge_x = -0.015, size = 4, hjust = "left", colour = "white")
+mapPlot
+```
+\pagebreak
+
+As expected, the 4 lines do not cross in one single point (figure \@ref(fig:intersection)), but they all converge over the same building, the Rockfeller Center. But how confident are we that we have identified the correct location? Let's try to find a visual representation of our confidence using Bayes inference.
+
+```{r intersection, fig.cap="Intersection of the reference lines", fig.height = 10, fig.width = 10, message = FALSE }
+map <- get_map(c(-73.979, 40.759), zoom=19, maptype="road")
+mapPlot <- ggmap(map)+
+    geom_point(aes(x = lon, y = lat), size = 3, data = landmarks, alpha = 1, colour = "red") +
+    geom_line(aes(x=lon,y=lat),data=line1, col = "black") +
+    geom_line(aes(x=lon,y=lat),data=line2, col = "black") +
+    geom_line(aes(x=lon,y=lat),data=line3, col = "black") +
+    geom_line(aes(x=lon,y=lat),data=line4, col = "black")
+mapPlot
+```
+\pagebreak
+
+# Distribution of possible locations - the Metropolis-Hastings algorithm
+
+In order to determine the distribution of most likely locations, the Metropolis-Hastings algorithm has been used to create a sample from the product of these prior and likelihood functions:
+
+```{r echo=T, results='hide', eval=FALSE}
+likelihood <- function (params) 
+{
+    bearing1 <- CalculateBearing(params[1], params[2], landmarks$lon[1], landmarks$lat[1])
+    bearing2 <- CalculateBearing(params[1], params[2], landmarks$lon[2], landmarks$lat[2])
+    bearing3 <- CalculateBearing(params[1], params[2], landmarks$lon[3], landmarks$lat[3])
+    bearing4 <- CalculateBearing(params[1], params[2], landmarks$lon[4], landmarks$lat[4])
+    
+    return (dnorm(alpha, bearing1, params[3], log = F) *
+            dnorm(beta, bearing2, params[3], log = F) *
+            dnorm(gamma, bearing3, params[3], log = F) * 
+            dnorm(delta, bearing4, params[3], log = F))
+}
+
+prior <- function(params) 
+{
+    return (dexp(params[3], rate = 20, log = F))
+}
+```
+
+The Metropoli-Hastings sampler is initialized around a location calculated as the mean of the 4 intersection points of the lines:
+
+```{r echo=T, results='hide', eval=FALSE}
+# landmarks is a data frame of the coordinates of the 3 reference points
+intersection1 <- intersectBearings(landmarks[1,], alpha, landmarks[2,], beta)
+intersection2 <- intersectBearings(landmarks[2,], beta, landmarks[3,], gamma)
+intersection3 <- intersectBearings(landmarks[3,], alpha, landmarks[4,], delta)
+intersection4 <- intersectBearings(landmarks[1,], alpha, landmarks[4,], delta)
+intersection <- c(mean(intersection1[1], intersection2[1], intersection3[1], intersection4[1]),
+                  mean(intersection1[2], intersection2[2], intersection3[2], intersection4[2]))
+
+draws[N, 1, ] <- runif(3, intersection[1] - 0.00001, intersection[1] + 0.00001)
+draws[N, 2, ] <- runif(3, intersection[2] - 0.00001, intersection[2] + 0.00001)
+draws[N, 3, ] <- rexp(3, 20)
+```
+
+The proposal distribution is the following:
+
+```{r echo=T, results='hide', eval=FALSE}
+prop.cov <- c(1e-9, 1e-9, 1e-3) * diag(3)
+```
+
+The sigma parameter of the multivariate normal proposal distribution cannot be allowed to be negative (it is a standard deviation), therefore in those cases our solution has been to take a sample from the proposal until the value of sigma is positive. This makes necessary the Hastings corrections in the expression of the acceptance ratio. A value of 100 has been chosen as upper bound and a standard deviation of 0.5 has been selected as the best parameter for convergence.
+
+```{r echo=T, results='hide', eval=FALSE}
+r <-( likelihood(proposed) *
+      prior(proposed) *
+      dtruncnorm(draws[step-1,3,chain],0,100,proposed[3],0.5)) / 
+    (likelihood(draws[step-1,,chain]) * 
+     prior(draws[step-1,,chain]) *
+     dtruncnorm(proposed[3],0,100,draws[step-1,3,chain],0.5))
+```
+
+The convergence of the algorithm has been monitored both visually, plotting the trace of the 3 chains (figure \@ref(fig:diag1)) and also using the Gelman-Rubin statistic with threshold 1.1.
+
+```{r diag1, fig.cap="Trace plots of the 3 chains for lon, lat and sigma"}
+knitr::include_graphics('./img/diagNY.png', dpi = 140)
+```
+
+Once the convergence has been achieved, a final sample of 10,000 items is collected. As expected (figure \@ref(fig:autoc)), the samples are highly autocorrelated, therefore they are thinned taking one sample every 4.
+
+```{r autoc, fig.cap="Autocorrelation plots of longitude and latitude", echo=FALSE}
+finalsample <- readRDS(file = "finalSampleNY.rds")
+
+par(mfrow=c(1,2))
+acf(finalsample[,1], main = "Autocorrelation plot of lon")
+acf(finalsample[,2], main = "Autocorrelation plot of lat")
+par(mfrow=c(1,1))
+```
+
+Finally, a kernel density estimation method is used to determine the density of the resulting sample. Once the density is plotted on the map as well as the bearing lines, it can be seen (figure \@ref(fig:finalmap)) that the area of most likely positions is close to the intersection that corresponds to the 2 nearest reference points.
+
+```{r finalmap, fig.cap="Distribution of the most likely positions",  echo=FALSE, message = FALSE}
+finalsample2 <- finalsample[seq(1, 30000, 4),]
+
+D <- kde2d(finalsample2[,1],finalsample2[,2],
+           h=c(sd(finalsample2[,1]),sd(finalsample2[,2])),
+           n=1024,
+           lims=c(-73.9800, -73.9780, 40.758, 40.760)) # Enough to cover map
+z <- melt(D$z)
+z$Var1<-D$x[z$X1]
+z$Var2<-D$y[z$X2]
+map <- get_map(c(mean(finalsample2[,1]),mean(finalsample2[,2])),zoom=19,maptype="road")
+mapPoints <- ggmap(map)+
+    geom_point(aes(x = lon, y = lat), size = 1, data = landmarks, alpha = .5) +
+    geom_raster(data=z,aes(x=Var1,y=Var2,fill=value))+
+    guides(fill=FALSE,alpha=FALSE)+
+    scale_fill_gradientn(colours=c("#0000FF00","#0000FFFF"))+
+    coord_cartesian() +
+    geom_line(aes(x=lon,y=lat),data=line1) +
+    geom_line(aes(x=lon,y=lat),data=line2) +
+    geom_line(aes(x=lon,y=lat),data=line3) +
+    geom_line(aes(x=lon,y=lat),data=line4) +
+    geom_point(aes(x=lon,y=lat),
+               data=data.frame(lon=mean(finalsample2[,1]),lat=mean(finalsample2[,2])),
+               size=0.5,colour="#FF0000")
+mapPoints
+
+```
+
+The distributions of the 3 parameters (lon, lat and sigma) can be seen in the plot in fig. \@ref(fig:distPlot).
+
+```{r distPlot, fig.cap="Distributions of the 3 parameters", echo=FALSE}
+colourLevels <- 128
+
+layout(matrix(c(1,2,3,4,5,6,7,8,9),nrow=3,byrow=T))
+par(mar=c(3,3,1,1))
+mycol = c("#FFFFFF",colorRampPalette(brewer.pal(9, "Reds"))(500))
+
+d <- density(finalsample2[,1], from=min(finalsample2[,1]), to=max(finalsample2[,1]), n=colourLevels)
+plot(d$x,d$y,type="l",lwd=2,xlab="",ylab="")
+title(ylab="", line=2, cex.lab=1)
+title(xlab="lon", line=2, cex.lab=1)
+
+d <- kde2d(finalsample2[,1],finalsample2[,2],lims=c(min(finalsample2[,1]),max(finalsample2[,1]),min(finalsample2[,2]),max(finalsample2[,2])),n=colourLevels)
+image(d$x,d$y,d$z,xlab="",ylab="",col=mycol,useRaster=T)
+title(ylab="lat", line=2, cex.lab=1)
+title(xlab="lon", line=2, cex.lab=1)
+
+d <- kde2d(finalsample2[,1],finalsample2[,3],lims=c(min(finalsample2[,1]),max(finalsample2[,1]),min(finalsample2[,3]),max(finalsample2[,3])),n=colourLevels)
+image(d$x,d$y,d$z,xlab="",ylab="",col=mycol,useRaster=T)
+title(ylab="sigma", line=2, cex.lab=1)
+title(xlab="lon", line=2, cex.lab=1)
+
+plot(NA,frame=FALSE,axes=FALSE,xlim=c(0,1),ylim=c(0,1))
+
+d <- density(finalsample2[,2], from=min(finalsample2[,2]), to=max(finalsample2[,2]), n=colourLevels)
+plot(d$x,d$y,type="l",lwd=2,xlab="",ylab="")
+title(ylab="", line=2, cex.lab=1)
+title(xlab="lat", line=2, cex.lab=1)
+
+d <- kde2d(finalsample2[,2],finalsample2[,3],lims=c(min(finalsample2[,2]),max(finalsample2[,2]),min(finalsample2[,3]),max(finalsample2[,3])),n=colourLevels)
+image(d$x,d$y,d$z,xlab="",ylab="",col=mycol,useRaster=T)
+title(ylab="sigma", line=2, cex.lab=1)
+title(xlab="lat", line=2, cex.lab=1)
+
+plot(NA,frame=FALSE,axes=FALSE,xlim=c(0,1),ylim=c(0,1))
+plot(NA,frame=FALSE,axes=FALSE,xlim=c(0,1),ylim=c(0,1))
+
+d <- density(finalsample2[,3], from=min(finalsample2[,3]), to=max(finalsample2[,3]), n=colourLevels)
+plot(d$x,d$y,type="l",lwd=2,xlab="",ylab="")
+title(ylab="", line=2, cex.lab=1)
+title(xlab="sigma", line=2, cex.lab=1)
+```
+
+# Conclusions
+
+The photograph seems to be taken from the observation deck of the Rockfeller Center. A quick exploration with Google Map's 3D globe feature confirms that from the [Top of the Rock](https://www.topoftherocknyc.com/experience/) the view is very close to the picture (see \@ref(fig:topOfTheRock)). As the distribution is very concentrated around a single point, we are very confident that our result is correct.
+
+```{r topOfTheRock, fig.cap="The view from the Rockfeller Center's observation deck"}
+knitr::include_graphics('./img/TopOfTheRockView.JPG', dpi = 200)
+```
